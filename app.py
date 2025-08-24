@@ -12,12 +12,12 @@ file_links = {}
 # Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Hello! Send me any file/video and I will give you a temporary streaming link (valid for 48 hours)."
+        "Hello! Send me any file/video/audio and I will give you a temporary streaming link (valid for 48 hours)."
     )
 
 # Handle files
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    file = update.message.effective_attachment or update.message.document or update.message.video
+    file = update.message.effective_attachment or update.message.document or update.message.video or update.message.audio
     if not file:
         await update.message.reply_text("No file detected.")
         return
@@ -46,7 +46,12 @@ async def main():
 
     # Handlers
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Document.ALL | filters.Video.ALL | filters.Audio.ALL, handle_file))
+    app.add_handler(
+        MessageHandler(
+            filters.DOCUMENT.ALL | filters.VIDEO.ALL | filters.AUDIO.ALL,
+            handle_file
+        )
+    )
 
     # Periodic job to clean expired links
     app.job_queue.run_repeating(clean_expired_links, interval=3600, first=10)
