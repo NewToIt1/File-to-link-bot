@@ -33,3 +33,4 @@ This bot allows you to upload Telegram files to **Cloudflare R2** and get a temp
 ## ⚡ Notes
 - Files & links expire automatically after 24h.
 - You must configure **R2 bucket lifecycle rule** to delete files after 24h.
+"# File-to-link-bot" 
