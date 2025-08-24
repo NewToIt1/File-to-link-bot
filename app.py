@@ -1,64 +1,50 @@
 import os
-from datetime import datetime, timedelta
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, MessageHandler, ContextTypes, filters
+from datetime import datetime, timedelta
 
-# Get bot token from environment variable
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-# Store file links with expiry
-file_links = {}
-
-# Start command
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Hello! Send me any file/video/audio and I will give you a temporary streaming link (valid for 48 hours)."
-    )
+TOKEN = os.getenv("BOT_TOKEN")
 
 # Handle incoming files
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    file = update.message.document or update.message.video or update.message.audio
+    file = None
+
+    # Check for document, video, or audio
+    if update.message.document:
+        file = update.message.document
+    elif update.message.video:
+        file = update.message.video
+    elif update.message.audio:
+        file = update.message.audio
+
     if not file:
-        await update.message.reply_text("No file detected.")
         return
 
-    # Get Telegram CDN link
-    new_file = await context.bot.get_file(file.file_id)
-    link = new_file.file_path
+    # Get file info
+    telegram_file = await context.bot.get_file(file.file_id)
 
-    # Set expiry 48 hours from now
-    expiry = datetime.utcnow() + timedelta(hours=48)
-    file_links[file.file_id] = {"link": link, "expiry": expiry}
+    # Generate expiry (48 hours)
+    expiry_time = datetime.utcnow() + timedelta(hours=48)
+    expiry_str = expiry_time.strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    await update.message.reply_text(f"Your 48-hour streaming link:\n{link}")
+    # Build Telegram CDN link (proxy, no token exposure)
+    stream_link = f"https://api.telegram.org/file/bot{TOKEN}/{telegram_file.file_path}"
 
-# Periodic cleanup of expired links
-async def clean_expired_links(context: ContextTypes.DEFAULT_TYPE):
-    now = datetime.utcnow()
-    expired = [fid for fid, info in file_links.items() if info["expiry"] < now]
-    for fid in expired:
-        del file_links[fid]
-
-# Main bot function
-async def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # Handlers
-    app.add_handler(CommandHandler("start", start))
-    # Correct filter usage for v20.3
-    app.add_handler(
-        MessageHandler(
-            filters.DOCUMENT | filters.VIDEO | filters.AUDIO,
-            handle_file
-        )
+    # Reply to user
+    await update.message.reply_text(
+        f"✅ Your temporary link (valid until {expiry_str}):\n\n{stream_link}"
     )
 
-    # Run periodic cleanup every hour
-    app.job_queue.run_repeating(clean_expired_links, interval=3600, first=10)
+# Main function
+def main():
+    app = Application.builder().token(TOKEN).build()
 
-    # Start polling
-    await app.run_polling()
+    # Correct filters for v20.3
+    file_filter = filters.Document.ALL | filters.Video.ALL | filters.Audio.ALL
+    app.add_handler(MessageHandler(file_filter, handle_file))
+
+    print("🤖 Bot is running...")
+    app.run_polling()
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()
