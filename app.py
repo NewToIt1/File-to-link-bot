@@ -1,69 +1,116 @@
 import os
-import logging
-from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
-import boto3
-from botocore.config import Config
+import time
+import uuid
+import threading
+import requests
+from flask import Flask, Response, abort
+from telegram.ext import Updater, MessageHandler, Filters
 
-# Logging setup
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# =======================
+# CONFIG
+# =======================
+BOT_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_TELEGRAM_BOT_TOKEN"
+BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+FILE_BASE_URL = f"https://api.telegram.org/file/bot{BOT_TOKEN}"
+LINK_EXPIRY = 48 * 3600  # 48 hours in seconds
 
-# Load environment variables
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-R2_ACCESS_KEY = os.getenv("R2_ACCESS_KEY")
-R2_SECRET_KEY = os.getenv("R2_SECRET_KEY")
-R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME")
-R2_ENDPOINT = os.getenv("R2_ENDPOINT")
+# Temporary storage for links {id: {file_path, expiry}}
+temp_links = {}
 
-# S3 client for R2
-s3 = boto3.client(
-    's3',
-    endpoint_url=R2_ENDPOINT,
-    aws_access_key_id=R2_ACCESS_KEY,
-    aws_secret_access_key=R2_SECRET_KEY,
-    config=Config(signature_version="s3v4")
-)
+app = Flask(__name__)
 
-async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.document:
+# =======================
+# Flask Routes
+# =======================
+
+@app.route("/download/<link_id>")
+def download(link_id):
+    if link_id not in temp_links:
+        return abort(404, "Link expired or invalid")
+
+    entry = temp_links[link_id]
+    if time.time() > entry["expiry"]:
+        del temp_links[link_id]
+        return abort(410, "Link expired")
+
+    file_url = f"{FILE_BASE_URL}/{entry['file_path']}"
+
+    def generate():
+        with requests.get(file_url, stream=True) as r:
+            for chunk in r.iter_content(chunk_size=8192):
+                yield chunk
+
+    return Response(generate(), content_type="application/octet-stream")
+
+
+# =======================
+# Telegram Handlers
+# =======================
+
+def handle_file(update, context):
+    file = None
+    if update.message.document:
+        file = update.message.document
+    elif update.message.video:
+        file = update.message.video
+    elif update.message.audio:
+        file = update.message.audio
+    elif update.message.voice:
+        file = update.message.voice
+
+    if not file:
+        update.message.reply_text("Send me a document, video, or audio file.")
         return
 
-    file = await update.message.document.get_file()
-    file_name = update.message.document.file_name
-    file_path = f"uploads/{file_name}"
+    file_id = file.file_id
+    file_info = requests.get(f"{BASE_URL}/getFile?file_id={file_id}").json()
 
-    # Download file locally
-    await file.download_to_drive(file_name)
+    if "result" not in file_info:
+        update.message.reply_text("Error retrieving file info.")
+        return
 
-    # Upload to R2
-    s3.upload_file(file_name, R2_BUCKET_NAME, file_path)
+    file_path = file_info["result"]["file_path"]
 
-    # Generate 24h signed URL
-    url = s3.generate_presigned_url(
-        'get_object',
-        Params={'Bucket': R2_BUCKET_NAME, 'Key': file_path},
-        ExpiresIn=86400
+    # Generate unique temp link
+    link_id = str(uuid.uuid4())
+    temp_links[link_id] = {
+        "file_path": file_path,
+        "expiry": time.time() + LINK_EXPIRY
+    }
+
+    # Full streaming URL
+    stream_link = f"https://YOUR_SERVER_URL/download/{link_id}"
+
+    update.message.reply_text(
+        f"✅ Here is your 48-hour link:\n{stream_link}\n\n"
+        "You can open this in VLC, MX Player, or browser. "
+        "Link will expire automatically after 48 hours."
     )
 
-    # Reply with link
-    await update.message.reply_text(
-        f"✅ File uploaded successfully!\n\n"
-        f"🔗 Download/Stream Link (valid 24h):\n{url}\n\n"
-        f"👉 You can play it in VLC/MX Player by pasting the link."
-    )
+# =======================
+# Cleanup Thread
+# =======================
+def cleanup_links():
+    while True:
+        now = time.time()
+        expired = [lid for lid, entry in temp_links.items() if now > entry["expiry"]]
+        for lid in expired:
+            del temp_links[lid]
+        time.sleep(600)  # cleanup every 10 mins
 
-    # Cleanup local file
-    os.remove(file_name)
+threading.Thread(target=cleanup_links, daemon=True).start()
 
+# =======================
+# Main Bot Runner
+# =======================
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-    logger.info("Bot started...")
-    app.run_polling()
+    updater = Updater(BOT_TOKEN, use_context=True)
+    dp = updater.dispatcher
+
+    dp.add_handler(MessageHandler(Filters.document | Filters.video | Filters.audio | Filters.voice, handle_file))
+
+    updater.start_polling()
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
 
 if __name__ == "__main__":
     main()
