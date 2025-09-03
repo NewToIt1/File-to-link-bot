@@ -66,11 +66,14 @@ telegram_app.add_handler(MessageHandler(filters.Document.ALL, handle_message))
 # -------------------------
 app = Flask(__name__)
 
+# --------- FIXED WEBHOOK ----------
 @app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-    telegram_app.update_queue.put_nowait(update)
+    # Fixed: process update directly, no queue needed
+    asyncio.run(telegram_app.process_update(update))
     return "ok", 200
+# ----------------------------------
 
 @app.route("/stream/<file_id>")
 def stream(file_id):
