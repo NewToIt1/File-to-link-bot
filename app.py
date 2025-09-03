@@ -64,16 +64,22 @@ telegram_app.add_handler(MessageHandler(filters.Document.ALL, handle_message))
 # -------------------------
 # Flask Web App for Render
 # -------------------------
-app = Flask(__name__)
+app = Flask(name)
+
+# -------------------------
+# Event loop fix
+# -------------------------
+# Create a new event loop and set it globally
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
 
 @app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-    # Use Application.initialize() context to safely process updates
     async def process():
         await telegram_app.initialize()
         await telegram_app.process_update(update)
-    asyncio.run(process())
+    loop.run_until_complete(process())  # Use the global loop instead of asyncio.run
     return "ok", 200
 
 @app.route("/stream/<file_id>")
@@ -108,9 +114,8 @@ async def set_webhook():
 
 def run():
     port = int(os.environ.get("PORT", 5000))
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(set_webhook())
+    loop.run_until_complete(set_webhook())  # Use global loop here too
     app.run(host="0.0.0.0", port=port)
 
-if __name__ == "__main__":
+if name == "main":
     run()
